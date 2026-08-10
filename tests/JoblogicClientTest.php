@@ -53,6 +53,7 @@ it('exposes named helpers for the documented collection searches', function () {
         ['jobAssets', 'JobAsset/GetAll'],
         ['visits', 'Visit/GetAll'],
         ['quotes', 'Quote/GetAll'],
+        ['tasks', 'Task/GetAll'],
         ['invoices', 'Invoice/GetAll'],
     ] as [$method, $path]) {
         $mock = new MockClient([
@@ -65,6 +66,59 @@ it('exposes named helpers for the documented collection searches', function () {
 
         expect($mock->getLastPendingRequest()?->getUrl())->toBe('https://uatapi.joblogic.com/api/v1/'.$path);
     }
+});
+
+it('retrieves the documented quote cost groups with the tenant boundary', function () {
+    $mock = new MockClient([
+        MockResponse::make([
+            'GroupLinesResponse' => [
+                'MaterialLines' => [],
+                'LabourLines' => [],
+            ],
+        ]),
+    ]);
+
+    $response = (new JoblogicClient(packageJoblogicCredentials(), 'token'))
+        ->withMockClient($mock)
+        ->quoteCosts('quote-1');
+
+    expect($response->successful())->toBeTrue()
+        ->and($response->json())->toBe([
+            'GroupLinesResponse' => [
+                'MaterialLines' => [],
+                'LabourLines' => [],
+            ],
+        ])
+        ->and($mock->getLastPendingRequest()?->getRequest()->query()->all())
+        ->toBe(['quoteId' => 'quote-1', 'TenantId' => 'tenant']);
+});
+
+it('retrieves task-library and job-task history with the documented identifiers', function () {
+    $mock = new MockClient([
+        MockResponse::make(['Id' => 'task-1', 'Task' => 'Inspect door']),
+        MockResponse::make(['JobId' => 'job-1', 'JobTasks' => []]),
+        MockResponse::make(['TotalCostIncludingVAT' => 120.00]),
+    ]);
+    $client = (new JoblogicClient(packageJoblogicCredentials(), 'token'))
+        ->withMockClient($mock);
+
+    $task = $client->task('task-1');
+
+    expect($task->json('Task'))->toBe('Inspect door')
+        ->and($mock->getLastPendingRequest()?->getRequest()->query()->all())
+        ->toBe(['tenantId' => 'tenant', 'id' => 'task-1']);
+
+    $jobTask = $client->jobTask('job-1');
+
+    expect($jobTask->json('JobId'))->toBe('job-1')
+        ->and($mock->getLastPendingRequest()?->getRequest()->query()->all())
+        ->toBe(['tenantId' => 'tenant', 'uniqueId' => 'job-1']);
+
+    $jobCosts = $client->jobCosts('job-1');
+
+    expect($jobCosts->json('TotalCostIncludingVAT'))->toBe(120)
+        ->and($mock->getLastPendingRequest()?->getRequest()->query()->all())
+        ->toBe(['tenantId' => 'tenant', 'Id' => 'job-1']);
 });
 
 it('retrieves a purchase order with the documented tenant and id query', function () {
@@ -98,4 +152,73 @@ it('retrieves a purchase-order line with the documented endpoint', function () {
     expect($response->json('Description'))->toBe('Closer')
         ->and($mock->getLastPendingRequest()?->getRequest()->query()->all())
         ->toBe(['id' => 'line-1', 'tenantId' => 'tenant']);
+});
+
+it('requests the documented Joblogic upload URI with the provider tenant parameter', function () {
+    $mock = new MockClient([
+        MockResponse::make([
+            'Uri' => 'https://uploads.example.test/blob?sas=token',
+            'ExpiryDate' => '2026-08-17T12:00:00Z',
+            'FileName' => 'form.pdf',
+        ]),
+    ]);
+
+    $response = (new JoblogicClient(packageJoblogicCredentials(), 'token'))
+        ->withMockClient($mock)
+        ->getUploadFileUri('form.pdf');
+
+    expect($response->json('Uri'))->toBe('https://uploads.example.test/blob?sas=token')
+        ->and($mock->getLastPendingRequest()?->getRequest()->query()->all())
+        ->toBe(['fileName' => 'form.pdf', 'tenanId' => 'tenant']);
+});
+
+it('uploads a PDF to the provider-issued URI without sending the API bearer token', function () {
+    $mock = new MockClient([
+        MockResponse::make([], 201),
+    ]);
+    $body = fopen('php://temp', 'r+');
+    fwrite($body, '%PDF-test');
+    rewind($body);
+
+    $response = (new JoblogicClient(packageJoblogicCredentials(), 'token'))
+        ->withMockClient($mock)
+        ->uploadFile('https://uploads.example.test/blob?sas=token', $body);
+
+    $request = $mock->getLastPendingRequest();
+    $requestBody = $request?->getRequest()->body()->get();
+    rewind($requestBody);
+
+    expect($response->status)->toBe(201)
+        ->and($request?->getUrl())->toBe('https://uploads.example.test/blob?sas=token')
+        ->and(stream_get_contents($requestBody))->toBe('%PDF-test')
+        ->and($request?->getRequest()->headers()->get('x-ms-blob-type'))->toBe('BlockBlob')
+        ->and($request?->getRequest()->headers()->get('Content-Type'))->toBe('application/pdf')
+        ->and($request?->getRequest()->headers()->get('Authorization'))->toBeNull();
+});
+
+it('creates a Joblogic note while enforcing the client tenant boundary', function () {
+    $mock = new MockClient([
+        MockResponse::make(['NoteId' => 'note-1', 'EntityType' => 3]),
+    ]);
+
+    $response = (new JoblogicClient(packageJoblogicCredentials(), 'token'))
+        ->withMockClient($mock)
+        ->createNote([
+            'EntityId' => 'job-1',
+            'EntityType' => 3,
+            'NoteText' => 'DoorOps form report',
+            'TenantId' => 'wrong-tenant',
+            'Attachments' => [
+                ['AttachmentLink' => 'https://uploads.example.test/blob?sas=token', 'Name' => 'form.pdf'],
+            ],
+        ]);
+
+    expect($response->json('NoteId'))->toBe('note-1')
+        ->and($mock->getLastPendingRequest()?->getRequest()->body()->all())
+        ->toMatchArray([
+            'EntityId' => 'job-1',
+            'EntityType' => 3,
+            'NoteText' => 'DoorOps form report',
+            'TenantId' => 'tenant',
+        ]);
 });

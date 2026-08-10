@@ -7,8 +7,11 @@ namespace ChrisJohnLeah\Joblogic;
 use ChrisJohnLeah\Joblogic\Data\JoblogicCredentials;
 use ChrisJohnLeah\Joblogic\Data\JoblogicPage;
 use ChrisJohnLeah\Joblogic\Data\JoblogicResponse;
+use ChrisJohnLeah\Joblogic\Requests\CreateNoteRequest;
 use ChrisJohnLeah\Joblogic\Requests\GetRequest;
 use ChrisJohnLeah\Joblogic\Requests\SearchRequest;
+use ChrisJohnLeah\Joblogic\Requests\UploadFileRequest;
+use Psr\Http\Message\StreamInterface;
 use Saloon\Contracts\Authenticator;
 use Saloon\Http\Auth\AccessTokenAuthenticator;
 use Saloon\Http\Connector;
@@ -132,6 +135,49 @@ final class JoblogicClient extends Connector
     public function quotes(array $body = [], int $pageIndex = 1, int $pageSize = 50): JoblogicPage
     {
         return $this->search('Quote/GetAll', $body, $pageIndex, $pageSize);
+    }
+
+    /**
+     * Retrieve the tenant task library used by Joblogic jobs.
+     *
+     * @param  array<string, mixed>  $body
+     */
+    public function tasks(array $body = [], int $pageIndex = 1, int $pageSize = 50): JoblogicPage
+    {
+        return $this->search('Task/GetAll', $body, $pageIndex, $pageSize);
+    }
+
+    /**
+     * Retrieve one task-library definition by its provider GUID.
+     */
+    public function task(string $taskId): JoblogicResponse
+    {
+        return $this->get('Task/GetById', [
+            'tenantId' => $this->credentials->tenantId,
+            'id' => $taskId,
+        ]);
+    }
+
+    /**
+     * Retrieve the task completion history assigned to a Joblogic job.
+     */
+    public function jobTask(string $jobUniqueId): JoblogicResponse
+    {
+        return $this->get('JobTask', [
+            'tenantId' => $this->credentials->tenantId,
+            'uniqueId' => $jobUniqueId,
+        ]);
+    }
+
+    /**
+     * Retrieve the cost and profitability groups attached to a Joblogic job.
+     */
+    public function jobCosts(string|int $jobId): JoblogicResponse
+    {
+        return $this->get('jobcost', [
+            'tenantId' => $this->credentials->tenantId,
+            'Id' => $jobId,
+        ]);
     }
 
     /** @param array<string, mixed> $body */
@@ -280,6 +326,18 @@ final class JoblogicClient extends Connector
     }
 
     /**
+     * Retrieve the documented quote cost groups, including material, labour,
+     * expense, travel, subcontractor and schedule-of-rates lines.
+     */
+    public function quoteCosts(string|int $quoteId): JoblogicResponse
+    {
+        return $this->get('Quote/GetCosts', [
+            'quoteId' => $quoteId,
+            'TenantId' => $this->credentials->tenantId,
+        ]);
+    }
+
+    /**
      * Execute a provider GET request and return a framework-independent response.
      *
      * @param  array<string, mixed>  $query
@@ -287,6 +345,62 @@ final class JoblogicClient extends Connector
     public function get(string $path, array $query = []): JoblogicResponse
     {
         return JoblogicResponse::fromSaloon($this->send(new GetRequest($path, $query)));
+    }
+
+    /**
+     * Request the provider-issued upload URI used by the note/attachment
+     * workflow. Joblogic's public documentation currently spells the tenant
+     * query parameter as `tenanId`; keep that provider contract here rather
+     * than leaking it into application code.
+     */
+    public function getUploadFileUri(string $fileName): JoblogicResponse
+    {
+        return $this->get('File/GetUploadFileUri', [
+            'fileName' => $fileName,
+            'tenanId' => $this->credentials->tenantId,
+        ]);
+    }
+
+    /**
+     * Upload bytes to the secure URI returned by Joblogic.
+     *
+     * The upload URI is provider-issued and is intentionally sent through a
+     * connector without the API bearer token. Callers should validate the
+     * URI's origin and expiry before using it when the value comes from an
+     * untrusted source.
+     *
+     * @param  resource|StreamInterface  $body
+     */
+    public function uploadFile(string $uploadUri, mixed $body, string $contentType = 'application/pdf'): JoblogicResponse
+    {
+        if (! $body instanceof StreamInterface && ! is_resource($body)) {
+            throw new \InvalidArgumentException('Joblogic upload bodies must be a stream resource or PSR stream.');
+        }
+
+        $connector = new JoblogicUploadConnector;
+
+        if (($mockClient = $this->getMockClient()) !== null) {
+            $connector->withMockClient($mockClient);
+        }
+
+        return JoblogicResponse::fromSaloon($connector->send(
+            new UploadFileRequest($uploadUri, $body, $contentType),
+        ));
+    }
+
+    /**
+     * Create a provider note and optional attachment on an entity.
+     *
+     * The tenant boundary is always supplied by the credentials, so a caller
+     * cannot accidentally write a note to another Joblogic tenant.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    public function createNote(array $payload): JoblogicResponse
+    {
+        $payload['TenantId'] = $this->credentials->tenantId;
+
+        return JoblogicResponse::fromSaloon($this->send(new CreateNoteRequest($payload)));
     }
 
     /**
