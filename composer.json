@@ -1,0 +1,26 @@
+{
+    "$schema": "https://getcomposer.org/schema.json",
+    "name": "chrisjohnleah/joblogic-api",
+    "description": "Framework-agnostic Saloon SDK for the Joblogic API.",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": "^8.3",
+        "saloonphp/saloon": "^4"
+    },
+    "require-dev": {
+        "pestphp/pest": "^5.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "ChrisJohnLeah\\Joblogic\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "ChrisJohnLeah\\Joblogic\\Tests\\": "tests/"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
